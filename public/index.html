@@ -1,0 +1,77 @@
+
+    <html>
+        <head>
+            <title>실시간 스파링 분석</title>
+            <!-- livekit cdn -->
+            <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.5.9/dist/livekit-client.umd.js"></script>
+            <style>
+                .container {
+                    display: flex;
+                    justify-content: center;
+                    align-items: start;
+                    padding: 20px;
+                }
+                .video-feed {
+                    max-width: 800px;
+                    width: 100%;
+                }
+                .stats {
+                    margin-left: 20px;
+                    padding: 20px;
+                    background: #f5f5f5;
+                    border-radius: 8px;
+                }
+                .stats-row {
+                    margin: 10px 0;
+                }
+            </style>
+        </head>
+        <body>
+<div id="join">
+  <div id="join-dialog">
+      <h2>Join a Video Room</h2>
+      <form onsubmit="joinRoom(); return false">
+          <div>
+              <label for="participant-name">Participant</label>
+              <input id="participant-name" class="form-control" type="text" required />
+          </div>
+          <div>
+              <label for="room-name">Room</label>
+              <input id="room-name" class="form-control" type="text" required />
+          </div>
+          <button id="join-button" class="btn btn-lg btn-success" type="submit">Join!</button>
+      </form>
+  </div>
+</div>
+
+
+<div id="room" hidden>
+  <div id="recording-text" hidden><span>Room is being recorded</span></div>
+  <div id="room-header">
+      <h2 id="room-title"></h2>
+      <button class="btn btn-danger" id="leave-room-button" onclick="leaveRoom()">Leave Room</button>
+  </div>
+  <div id="layout-container"></div>
+</div>
+            <div class="container">
+                <div>
+                    <img id="video-feed" class="video-feed"/>
+                </div>
+                <div class="stats">
+                    <h2>경기 통계</h2>
+                    <div id="player1-stats">
+                        <div class="stats-row">Player 1 - Hook: <span id="p1-hook">0</span></div>
+                        <div class="stats-row">Hits - Face: <span id="p1-face">0</span>, Body: <span id="p1-body">0</span></div>
+                        <div class="stats-row">Total Hits: <span id="p1-total">0</span></div>
+                    </div>
+                    <div id="player2-stats">
+                        <div class="stats-row">Player 2 - Hook: <span id="p2-hook">0</span></div>
+                        <div class="stats-row">Hits - Face: <span id="p2-face">0</span>, Body: <span id="p2-body">0</span></div>
+                        <div class="stats-row">Total Hits: <span id="p2-total">0</span></div>
+                    </div>
+                </div>
+            </div>
+            <script src="/public/app.js">
+            </script>
+        </body>
+    </html>

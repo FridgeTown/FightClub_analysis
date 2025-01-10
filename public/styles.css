@@ -1,0 +1,19 @@
+.container {
+  display: flex;
+  justify-content: center;
+  align-items: start;
+  padding: 20px;
+}
+.video-feed {
+  max-width: 800px;
+  width: 100%;
+}
+.stats {
+  margin-left: 20px;
+  padding: 20px;
+  background: #f5f5f5;
+  border-radius: 8px;
+}
+.stats-row {
+  margin: 10px 0;
+}

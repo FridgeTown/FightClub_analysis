@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import cv2
 import base64
 import json
@@ -9,6 +10,7 @@ import os
 from punch_detector import PunchDetector
 import signal
 import sys
+import numpy as np
 
 app = FastAPI()
 detector = PunchDetector()
@@ -25,216 +27,105 @@ async def startup_event():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+app.mount("/public", StaticFiles(directory="public"), name="public")
+
 @app.get("/", response_class=HTMLResponse)
 async def get():
-    return """
-    <html>
-        <head>
-            <title>실시간 스파링 분석</title>
-            <style>
-                .container {
-                    display: flex;
-                    justify-content: center;
-                    align-items: start;
-                    padding: 20px;
-                }
-                .video-feed {
-                    max-width: 800px;
-                    width: 100%;
-                }
-                .stats {
-                    margin-left: 20px;
-                    padding: 20px;
-                    background: #f5f5f5;
-                    border-radius: 8px;
-                }
-                .stats-row {
-                    margin: 10px 0;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div>
-                    <img id="video-feed" class="video-feed"/>
-                </div>
-                <div class="stats">
-                    <h2>경기 통계</h2>
-                    <div id="player1-stats">
-                        <div class="stats-row">Player 1 - Hook: <span id="p1-hook">0</span></div>
-                        <div class="stats-row">Hits - Face: <span id="p1-face">0</span>, Body: <span id="p1-body">0</span></div>
-                        <div class="stats-row">Total Hits: <span id="p1-total">0</span></div>
-                    </div>
-                    <div id="player2-stats">
-                        <div class="stats-row">Player 2 - Hook: <span id="p2-hook">0</span></div>
-                        <div class="stats-row">Hits - Face: <span id="p2-face">0</span>, Body: <span id="p2-body">0</span></div>
-                        <div class="stats-row">Total Hits: <span id="p2-total">0</span></div>
-                    </div>
-                </div>
-            </div>
-            <script>
-                const ws = new WebSocket('ws://localhost:8000/ws');
-                
-                ws.onmessage = function(event) {
-                    const data = JSON.parse(event.data);
-                    
-                    // 이미지 업데이트
-                    document.getElementById('video-feed').src = 'data:image/jpeg;base64,' + data.image;
-                    
-                    // 통계 업데이트
-                    document.getElementById('p1-hook').textContent = data.stats.player1.hook;
-                    document.getElementById('p1-face').textContent = data.stats.player1.hits.face;
-                    document.getElementById('p1-body').textContent = data.stats.player1.hits.body;
-                    document.getElementById('p1-total').textContent = 
-                        data.stats.player1.hits.face + data.stats.player1.hits.body;
-                    
-                    document.getElementById('p2-hook').textContent = data.stats.player2.hook;
-                    document.getElementById('p2-face').textContent = data.stats.player2.hits.face;
-                    document.getElementById('p2-body').textContent = data.stats.player2.hits.body;
-                    document.getElementById('p2-total').textContent = 
-                        data.stats.player2.hits.face + data.stats.player2.hits.body;
-                };
-            </script>
-        </body>
-    </html>
-    """
+    html_path = os.path.join("public", "index.html")
+    with open(html_path, "r", encoding="utf-8") as file:
+        html_content = file.read()
+    return HTMLResponse(content=html_content)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     print("새로운 웹소켓 연결 시작")
     await websocket.accept()
     
-    # 비디오 캡스 설정
-    cap = cv2.VideoCapture(VIDEO_SOURCE)
-    if not cap.isOpened():
-        print(f"Error: 비디오 소스를 열 수 없습니다 - {VIDEO_SOURCE}")
-        await websocket.close()
-        return
-    
-    # 비디오 파일과 웹캠에 따른 설정 조정
-    is_video_file = isinstance(VIDEO_SOURCE, str)
-    if is_video_file:
-        # 비디오 파일 설정
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_delay = 1.0 / fps if fps > 0 else 0.03
-        print(f"비디오 파일 모드 - FPS: {fps}")
-    else:
-        # 웹캠 설정
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # YOLO 입력 크기에 맞춤
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 640)  # 정사각형 비율 사용
-        cap.set(cv2.CAP_PROP_FPS, 30)
-        cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
-        frame_delay = 0.01
-        print("웹캠 모드 - HD 설정")
-    
-    print(f"비디오 캡처 성공 - 소스: {VIDEO_SOURCE}")
-    
     # 큐 초기화
     await detector.initialize_queues()
-    
-    # 프레임 처리 작업자 생성
+
     async def frame_processor():
+        """프레임 처리 작업자"""
         try:
             while not shutdown_event.is_set():
                 if detector.processing_queue.empty():
                     await asyncio.sleep(0.01)
                     continue
-                    
-                frame = await detector.processing_queue.get()
-                if frame is None:
+                
+                # 큐에서 base64 데이터를 가져오기
+                base64_data = await detector.processing_queue.get()
+                print(f"Processing queue received: {len(base64_data)} bytes")  # 디버깅
+                if base64_data is None:
+                    print("Received None in processing queue")
                     continue
+                
+                try:
+                    # Base64 디코딩
+                    image_data = base64.b64decode(base64_data)
+                    np_array = np.frombuffer(image_data, dtype=np.uint8)
+                    frame = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
                     
-                # 웹캠 모드에서 프레임 전처리
-                if not is_video_file:
+                    if frame is None:
+                        print("Error: Frame decoding failed")
+                        continue
+                    
+                    print(f"Frame shape after decoding: {frame.shape}")  # 디버깅
+                    
                     # 밝기와 대비 조정
                     frame = cv2.convertScaleAbs(frame, alpha=1.2, beta=10)
-                    
-                    # 노이즈 제거
                     frame = cv2.GaussianBlur(frame, (5, 5), 0)
-                
-                result = await detector.process_frame_async(frame)
-                if result:
-                    await detector.result_queue.put(result)
-                
+
+                    result = await detector.process_frame_async(frame)
+                    if result:
+                        print(f"Processed result: {result.keys()}")  # 디버깅
+                        await detector.result_queue.put(result)
+
+                except Exception as e:
+                    print(f"프레임 처리 오류: {e}")
+        except asyncio.CancelledError:
+            print("프레임 처리 작업이 취소되었습니다")
         except Exception as e:
-            print(f"Frame processor error: {e}")
-    
+            print(f"프레임 처리 루프 오류: {e}")
+
     # 작업자 시작
     processor_task = asyncio.create_task(frame_processor())
-    frame_count = 0
-    
+
     try:
         while not shutdown_event.is_set():
-            try:
-                ret, frame = cap.read()
-                if not ret:
-                    if is_video_file:
-                        print("비디오 파일 재시작")
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        continue
-                    else:
-                        print("웹캠 프레임을 읽을 수 없습니다")
-                        break
-                
-                frame_count += 1
-                
-                # 비디오 파일일 경우만 프레임 스킵
-                if is_video_file and frame_count % 2 != 0:
-                    continue
-                
-                if not is_video_file:
-                    # 웹캠 프레임 전처리 순서 변경
-                    frame = cv2.resize(frame, (640, 640))  # YOLO 입력 크기에 맞춤
-                    frame = cv2.convertScaleAbs(frame, alpha=1.3, beta=5)  # 약간의 밝기 조정
+            message = await websocket.receive_json()
+            if "image" in message:
+                print(f"New frame received, Base64 length: {len(message['image'])}")  # 디버깅
+                base64_image = message["image"]
                 
                 # 프레임 처리 큐에 추가
                 if not detector.processing_queue.full():
-                    await detector.processing_queue.put(frame)
-                
+                    await detector.processing_queue.put(base64_image)
+                else:
+                    print("Processing queue is full")
+
                 # 결과 가져오기
                 if not detector.result_queue.empty():
                     result = await detector.result_queue.get()
+                    print(f"Result queue received: {result.keys()}")  # 디버깅
                     if result and 'visualization' in result:
-                        # JPEG 품질 조정
-                        quality = 70 if not is_video_file else 80
-                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-                        _, buffer = cv2.imencode('.jpg', result['visualization'], encode_param)
+                        _, buffer = cv2.imencode('.jpg', result['visualization'])
                         image_base64 = base64.b64encode(buffer).decode('utf-8')
-                        
+                        print(f"Base64 length of processed image: {len(image_base64)}")  # 디버깅
                         await websocket.send_json({
                             'image': image_base64,
-                            'stats': result.get('stats', {
-                                'player1': {'hook': 0, 'hits': {'face': 0, 'body': 0}},
-                                'player2': {'hook': 0, 'hits': {'face': 0, 'body': 0}}
-                            })
+                            'stats': result.get('stats', {})
                         })
-                        
-                        if frame_count % 30 == 0:
-                            print(f"프레임 전송 완료: {frame_count}")
-                
-                await asyncio.sleep(frame_delay)
-                
-            except asyncio.CancelledError:
-                print("작업이 취소되었습니다")
-                break
-            except Exception as e:
-                print(f"메인 루프 오류: {e}")
-                continue
-            
+            else:
+                print("지원되지 않는 메시지 포맷")
     except Exception as e:
-        print(f"Websocket error: {e}")
+        print(f"WebSocket error: {e}")
     finally:
-        print("연결 종료 및 정리 작업 시작")
         processor_task.cancel()
         try:
             await processor_task
         except asyncio.CancelledError:
             pass
-        
-        cap.release()
         await websocket.close()
-        print("웹소켓 연결이 종료되었습니다")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
