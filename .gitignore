@@ -1,0 +1,4 @@
+/.venv
+.env
+/python-sdks
+basic_room.log
