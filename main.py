@@ -1,156 +1,238 @@
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-import cv2
-import base64
-import json
-import asyncio
-import argparse
 import os
-from punch_detector import PunchDetector
-import signal
-import sys
+from dotenv import load_dotenv
+import logging
+import asyncio
+import cv2
 import numpy as np
+from livekit import api, rtc
+from punch_detector import PunchDetector
+import time
 
-app = FastAPI()
+# .env 파일 로드
+load_dotenv()
+
+# Set the following environment variables with your own values
+LIVEKIT_URL = os.getenv("LIVEKIT_URL")
+LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
+LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
+
+ROOM_NAME = "0"  # 참여하려는 방 이름
+PARTICIPANT_IDENTITY = "participant_F4xG2aH9"
+PARTICIPANT_NAME = "name_Y8zQ1pX3"
+
+FRAME_INTERVAL = 0.05
+
 detector = PunchDetector()
 shutdown_event = asyncio.Event()
 
-def signal_handler(sig, frame):
-    """시그널 핸들러"""
-    print('\n프로그램을 종료합니다...')
-    shutdown_event.set()
-
-@app.on_event("startup")
-async def startup_event():
-    """앱 시작 시 시그널 핸들러 등록"""
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-app.mount("/public", StaticFiles(directory="public"), name="public")
-
-@app.get("/", response_class=HTMLResponse)
-async def get():
-    html_path = os.path.join("public", "index.html")
-    with open(html_path, "r", encoding="utf-8") as file:
-        html_content = file.read()
-    return HTMLResponse(content=html_content)
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    print("새로운 웹소켓 연결 시작")
-    await websocket.accept()
-    
-    # 큐 초기화
-    await detector.initialize_queues()
-
-    async def frame_processor():
-        """프레임 처리 작업자"""
-        try:
-            while not shutdown_event.is_set():
-                if detector.processing_queue.empty():
-                    await asyncio.sleep(0.01)
-                    continue
-                
-                # 큐에서 base64 데이터를 가져오기
-                base64_data = await detector.processing_queue.get()
-                print(f"Processing queue received: {len(base64_data)} bytes")  # 디버깅
-                if base64_data is None:
-                    print("Received None in processing queue")
-                    continue
-                
-                try:
-                    # Base64 디코딩
-                    image_data = base64.b64decode(base64_data)
-                    np_array = np.frombuffer(image_data, dtype=np.uint8)
-                    frame = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
-                    
-                    if frame is None:
-                        print("Error: Frame decoding failed")
-                        continue
-                    
-                    print(f"Frame shape after decoding: {frame.shape}")  # 디버깅
-                    
-                    # 밝기와 대비 조정
-                    frame = cv2.convertScaleAbs(frame, alpha=1.2, beta=10)
-                    frame = cv2.GaussianBlur(frame, (5, 5), 0)
-
-                    result = await detector.process_frame_async(frame)
-                    if result:
-                        print(f"Processed result: {result.keys()}")  # 디버깅
-                        await detector.result_queue.put(result)
-
-                except Exception as e:
-                    print(f"프레임 처리 오류: {e}")
-        except asyncio.CancelledError:
-            print("프레임 처리 작업이 취소되었습니다")
-        except Exception as e:
-            print(f"프레임 처리 루프 오류: {e}")
-
-    # 작업자 시작
-    processor_task = asyncio.create_task(frame_processor())
-
+async def frame_processor():
     try:
         while not shutdown_event.is_set():
-            message = await websocket.receive_json()
-            if "image" in message:
-                print(f"New frame received, Base64 length: {len(message['image'])}")  # 디버깅
-                base64_image = message["image"]
-                
-                # 프레임 처리 큐에 추가
-                if not detector.processing_queue.full():
-                    await detector.processing_queue.put(base64_image)
-                else:
-                    print("Processing queue is full")
+            if detector.processing_queue.empty():
+                await asyncio.sleep(0.01)
+                continue
+            
+            frame = await detector.processing_queue.get()
+            if frame is None:
+                continue
+            
+            try:
+                # 데이터 타입 변환 (float64 → uint8)
+                if frame.dtype != np.uint8:
+                    frame = (frame * 255).astype(np.uint8)
 
-                # 결과 가져오기
+                # NumPy로 밝기와 대비 조정
+                frame = frame * 1.2 + 10
+                frame = np.clip(frame, 0, 255).astype(np.uint8)  # 값 범위 제한 및 uint8로 변환
+
+                # OpenCV로 블러 적용
+                frame = cv2.blur(frame, (3, 3))  # 작은 커널 사용
+
+
+                result = await detector.process_frame_async(frame)
+                if result:
+                    await detector.result_queue.put(result)
+
                 if not detector.result_queue.empty():
                     result = await detector.result_queue.get()
-                    print(f"Result queue received: {result.keys()}")  # 디버깅
-                    if result and 'visualization' in result:
-                        _, buffer = cv2.imencode('.jpg', result['visualization'])
-                        image_base64 = base64.b64encode(buffer).decode('utf-8')
-                        print(f"Base64 length of processed image: {len(image_base64)}")  # 디버깅
-                        await websocket.send_json({
-                            'image': image_base64,
-                            'stats': result.get('stats', {})
-                        })
-            else:
-                print("지원되지 않는 메시지 포맷")
-    except Exception as e:
-        print(f"WebSocket error: {e}")
-    finally:
+                if result and 'visualization' in result:
+                    vis_frame = result['visualization']
+                    cv2.imshow("Visualization", vis_frame)
+                    cv2.waitKey(1)
+
+            except Exception as e:
+                print(f"프레임 처리 오류: {e}")
+    except asyncio.CancelledError:
+        print("frame_processor task cancelled.")
+
+async def process_video_frames(video_stream: rtc.VideoStream):   
+    last_processed_time = 0  # 마지막으로 프레임을 처리한 시간
+    async for frame_event in video_stream:
+        
+        current_time = time.time()
+        
+        # 설정한 간격이 지나지 않았다면 다음 프레임으로 넘어감
+        if current_time - last_processed_time < FRAME_INTERVAL:
+            continue
+        # VideoFrameEvent 객체에서 frame 데이터 추출
+        frame_obj = frame_event.frame 
+
+        yuv_data = np.frombuffer(frame_obj.data, dtype=np.uint8)
+        height = frame_obj.height
+        width = frame_obj.width
+        yuv_image = yuv_data.reshape((height + height // 2, width))
+        bgr_image = cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_I420)
+
+        if not detector.processing_queue.full():
+            await detector.processing_queue.put(bgr_image)
+
+        last_processed_time = current_time
+
+
+    cv2.destroyAllWindows()
+
+async def main(room: rtc.Room) -> None:
+    processor_task = asyncio.create_task(frame_processor())
+
+    @room.on("participant_connected")
+    def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
+        logging.info(
+            "participant connected: %s %s", participant.sid, participant.identity
+        )
+
+    @room.on("participant_disconnected")
+    def on_participant_disconnected(participant: rtc.RemoteParticipant):
+        logging.info(
+            "participant disconnected: %s %s", participant.sid, participant.identity
+        )
+
+    @room.on("local_track_published")
+    def on_local_track_published(publication: rtc.LocalTrackPublication):
+        logging.info("local track published: %s", publication.sid)
+
+    @room.on("local_track_unpublished")
+    def on_local_track_unpublished(publication: rtc.LocalTrackPublication):
+        logging.info("local track unpublished: %s", publication.sid)
+
+    @room.on("track_published")
+    def on_track_published(
+        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
+    ):
+        logging.info(
+            "track published: %s from participant %s (%s)",
+            publication.sid,
+            participant.sid,
+            participant.identity,
+        )
+
+    @room.on("track_unpublished")
+    def on_track_unpublished(
+        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
+    ):
+        logging.info("track unpublished: %s", publication.sid)
+
+    @room.on("track_subscribed")
+    def on_track_subscribed(
+        track: rtc.Track,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ):
+        logging.info("track subscribed: %s", publication.sid)
+        if track.kind == rtc.TrackKind.KIND_VIDEO:
+            _video_stream = rtc.VideoStream(track)
+            asyncio.ensure_future(process_video_frames(_video_stream))
+
+            # video_stream is an async iterator that yields VideoFrame
+        elif track.kind == rtc.TrackKind.KIND_AUDIO:
+            print("Subscribed to an Audio Track")
+            _audio_stream = rtc.AudioStream(track)
+            # audio_stream is an async iterator that yields AudioFrame
+
+    @room.on("track_unsubscribed")
+    def on_track_unsubscribed(
+        track: rtc.Track,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ):
+        logging.info("track unsubscribed: %s", publication.sid)
+
+    @room.on("data_received")
+    def on_data_received(data: rtc.DataPacket):
+        logging.info("received data from %s: %s", data.participant.identity, data.data)
+
+    @room.on("connection_quality_changed")
+    def on_connection_quality_changed(
+        participant: rtc.Participant, quality: rtc.ConnectionQuality
+    ):
+        logging.info("connection quality changed for %s", participant.identity)
+
+    @room.on("track_subscription_failed")
+    def on_track_subscription_failed(
+        participant: rtc.RemoteParticipant, track_sid: str, error: str
+    ):
+        logging.info("track subscription failed: %s %s", participant.identity, error)
+
+    @room.on("connection_state_changed")
+    def on_connection_state_changed(state: rtc.ConnectionState):
+        logging.info("connection state changed: %s", state)
+
+    @room.on("connected")
+    def on_connected() -> None:
+        logging.info("connected")
+
+    @room.on("disconnected")
+    def on_disconnected() -> None:
+        shutdown_event.set()
         processor_task.cancel()
-        try:
-            await processor_task
-        except asyncio.CancelledError:
-            pass
-        await websocket.close()
+        logging.info("disconnected")
+
+    @room.on("reconnecting")
+    def on_reconnecting() -> None:
+        logging.info("reconnecting")
+
+    @room.on("reconnected")
+    def on_reconnected() -> None:
+        logging.info("reconnected")
+
+    token = (
+        api.AccessToken()
+        .with_identity(PARTICIPANT_IDENTITY)
+        .with_name(PARTICIPANT_NAME)
+        .with_grants(
+            api.VideoGrants(
+                room_join=True,
+                room=ROOM_NAME,
+            )
+        )
+        .to_jwt()
+    )
+    await room.connect(LIVEKIT_URL, token)
+
+    logging.info("connected to room %s", room.name)
+
+    try:
+        await processor_task
+    except asyncio.CancelledError:
+        pass
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--video', type=str, help='비디오 파일 경로')
-    args = parser.parse_args()
-    
-    VIDEO_SOURCE = args.video if args.video else 0
-    
-    import uvicorn
-    
-    config = uvicorn.Config(
-        app=app,
-        host="0.0.0.0",
-        port=8000,
-        loop="asyncio",
-        log_level="info",
-        reload=False
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[logging.FileHandler("basic_room.log"), logging.StreamHandler()],
     )
     
-    server = uvicorn.Server(config)
-    
+    loop = asyncio.get_event_loop()
+    room = rtc.Room(loop=loop)
+    async def cleanup():
+        await room.disconnect()
+        loop.stop()
+
+    asyncio.ensure_future(main(room))
+
     try:
-        server.run()
-    except KeyboardInterrupt:
-        print("\n서버를 종료합니다...")
+        loop.run_forever()
     finally:
-        # 추가 정리 작업이 필요한 경우
-        cv2.destroyAllWindows() 
+        loop.run_until_complete(room.disconnect())
+        loop.close()
+
