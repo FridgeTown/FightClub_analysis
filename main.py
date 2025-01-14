@@ -1,12 +1,20 @@
 import os
 from dotenv import load_dotenv
-import logging
 import asyncio
 import cv2
 import numpy as np
 from livekit import api, rtc
 from punch_detector import PunchDetector
 import time
+import signal
+import json
+import redis
+
+redis_client = redis.Redis(
+    host="127.0.0.1",  # Redis 서버 IP
+    port=6379,        # Redis 포트
+    db=0,             # 기본 DB
+)
 
 # .env 파일 로드
 load_dotenv()
@@ -16,16 +24,22 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 
-ROOM_NAME = "0"  # 참여하려는 방 이름
+os.environ["LIVEKIT_URL"] = LIVEKIT_URL
+os.environ["LIVEKIT_API_KEY"] = LIVEKIT_API_KEY
+os.environ["LIVEKIT_API_SECRET"] = LIVEKIT_API_SECRET
+
+# ROOM_NAME = "0"  # 참여하려는 방 이름
 PARTICIPANT_IDENTITY = "participant_F4xG2aH9"
 PARTICIPANT_NAME = "name_Y8zQ1pX3"
 
 FRAME_INTERVAL = 0.05
 
-detector = PunchDetector()
+# detector = PunchDetector()
 shutdown_event = asyncio.Event()
+rooms = dict()
 
-async def frame_processor():
+
+async def frame_processor(detector, room_name):
     try:
         while not shutdown_event.is_set():
             if detector.processing_queue.empty():
@@ -55,17 +69,19 @@ async def frame_processor():
 
                 if not detector.result_queue.empty():
                     result = await detector.result_queue.get()
-                if result and 'visualization' in result:
-                    vis_frame = result['visualization']
-                    cv2.imshow("Visualization", vis_frame)
-                    cv2.waitKey(1)
+                    redis_client.set(room_name, json.dumps(detector.players))
+                # if result and 'visualization' in result:
+                #     vis_frame = result['visualization']
+                #     cv2.imshow("Visualization", vis_frame)
+                #     if cv2.waitKey(1) & 0xFF == ord("q"):
+                #         return
 
             except Exception as e:
                 print(f"프레임 처리 오류: {e}")
     except asyncio.CancelledError:
         print("frame_processor task cancelled.")
 
-async def process_video_frames(video_stream: rtc.VideoStream):   
+async def process_video_frames(video_stream: rtc.VideoStream, detector):   
     last_processed_time = 0  # 마지막으로 프레임을 처리한 시간
     async for frame_event in video_stream:
         
@@ -91,108 +107,26 @@ async def process_video_frames(video_stream: rtc.VideoStream):
 
     cv2.destroyAllWindows()
 
-async def main(room: rtc.Room) -> None:
-    processor_task = asyncio.create_task(frame_processor())
+async def main(rtc_room: rtc.Room, room_name) -> None:
+    processor_task = asyncio.create_task(frame_processor(rooms[room_name], room_name))
 
-    @room.on("participant_connected")
-    def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
-        logging.info(
-            "participant connected: %s %s", participant.sid, participant.identity
-        )
-
-    @room.on("participant_disconnected")
-    def on_participant_disconnected(participant: rtc.RemoteParticipant):
-        logging.info(
-            "participant disconnected: %s %s", participant.sid, participant.identity
-        )
-
-    @room.on("local_track_published")
-    def on_local_track_published(publication: rtc.LocalTrackPublication):
-        logging.info("local track published: %s", publication.sid)
-
-    @room.on("local_track_unpublished")
-    def on_local_track_unpublished(publication: rtc.LocalTrackPublication):
-        logging.info("local track unpublished: %s", publication.sid)
-
-    @room.on("track_published")
-    def on_track_published(
-        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
-    ):
-        logging.info(
-            "track published: %s from participant %s (%s)",
-            publication.sid,
-            participant.sid,
-            participant.identity,
-        )
-
-    @room.on("track_unpublished")
-    def on_track_unpublished(
-        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
-    ):
-        logging.info("track unpublished: %s", publication.sid)
-
-    @room.on("track_subscribed")
+    @rtc_room.on("track_subscribed")
     def on_track_subscribed(
         track: rtc.Track,
         publication: rtc.RemoteTrackPublication,
         participant: rtc.RemoteParticipant,
     ):
-        logging.info("track subscribed: %s", publication.sid)
+        # logging.info("track subscribed: %s", participant.name)
         if track.kind == rtc.TrackKind.KIND_VIDEO:
             _video_stream = rtc.VideoStream(track)
-            asyncio.ensure_future(process_video_frames(_video_stream))
+            asyncio.ensure_future(process_video_frames(_video_stream, rooms[room_name]))
 
-            # video_stream is an async iterator that yields VideoFrame
-        elif track.kind == rtc.TrackKind.KIND_AUDIO:
-            print("Subscribed to an Audio Track")
-            _audio_stream = rtc.AudioStream(track)
-            # audio_stream is an async iterator that yields AudioFrame
-
-    @room.on("track_unsubscribed")
-    def on_track_unsubscribed(
-        track: rtc.Track,
-        publication: rtc.RemoteTrackPublication,
-        participant: rtc.RemoteParticipant,
-    ):
-        logging.info("track unsubscribed: %s", publication.sid)
-
-    @room.on("data_received")
-    def on_data_received(data: rtc.DataPacket):
-        logging.info("received data from %s: %s", data.participant.identity, data.data)
-
-    @room.on("connection_quality_changed")
-    def on_connection_quality_changed(
-        participant: rtc.Participant, quality: rtc.ConnectionQuality
-    ):
-        logging.info("connection quality changed for %s", participant.identity)
-
-    @room.on("track_subscription_failed")
-    def on_track_subscription_failed(
-        participant: rtc.RemoteParticipant, track_sid: str, error: str
-    ):
-        logging.info("track subscription failed: %s %s", participant.identity, error)
-
-    @room.on("connection_state_changed")
-    def on_connection_state_changed(state: rtc.ConnectionState):
-        logging.info("connection state changed: %s", state)
-
-    @room.on("connected")
-    def on_connected() -> None:
-        logging.info("connected")
-
-    @room.on("disconnected")
+    @rtc_room.on("disconnected")
     def on_disconnected() -> None:
         shutdown_event.set()
         processor_task.cancel()
-        logging.info("disconnected")
-
-    @room.on("reconnecting")
-    def on_reconnecting() -> None:
-        logging.info("reconnecting")
-
-    @room.on("reconnected")
-    def on_reconnected() -> None:
-        logging.info("reconnected")
+        rooms.pop(room_name)
+        redis_client.delete(room_name)
 
     token = (
         api.AccessToken()
@@ -201,38 +135,54 @@ async def main(room: rtc.Room) -> None:
         .with_grants(
             api.VideoGrants(
                 room_join=True,
-                room=ROOM_NAME,
+                room=room_name,
             )
         )
         .to_jwt()
     )
-    await room.connect(LIVEKIT_URL, token)
-
-    logging.info("connected to room %s", room.name)
+    await rtc_room.connect(LIVEKIT_URL, token)
 
     try:
         await processor_task
     except asyncio.CancelledError:
         pass
 
+async def connect_and_process_room(room_name):
+    rtc_room = rtc.Room()
+    await main(rtc_room, room_name)
+
+
+async def poll_rooms():
+    lkapi = api.LiveKitAPI()
+    while not shutdown_event.is_set():
+        try:
+            roomlist = await lkapi.room.list_rooms(api.ListRoomsRequest())
+            current_rooms = {room.name for room in roomlist.rooms}
+            for current_room in current_rooms:
+                if current_room not in rooms:
+                    rooms[current_room] = PunchDetector()
+                    redis_client.set(current_room, json.dumps({}))
+                    asyncio.create_task(connect_and_process_room(current_room))
+
+        except Exception as e:
+            print(f"Error while polling rooms: {e}")
+
+        await asyncio.sleep(3)  # 1초 대기
+
+
+def shutdown_handler():
+    redis_client.flushdb()
+    shutdown_event.set()
+
+
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        handlers=[logging.FileHandler("basic_room.log"), logging.StreamHandler()],
-    )
-    
-    loop = asyncio.get_event_loop()
-    room = rtc.Room(loop=loop)
-    async def cleanup():
-        await room.disconnect()
-        loop.stop()
-
-    asyncio.ensure_future(main(room))
-
+    signal.signal(signal.SIGINT, lambda s, f: shutdown_handler())
+    signal.signal(signal.SIGTERM, lambda s, f: shutdown_handler())
+    # WebRTC 관련 작업 실행
     try:
-        loop.run_forever()
+        asyncio.run(poll_rooms())
+    except Exception as e:
+        print(f"Unexpected error: {e}")
     finally:
-        loop.run_until_complete(room.disconnect())
-        loop.close()
-
+        redis_client.flushdb()

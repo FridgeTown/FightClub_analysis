@@ -3,3 +3,5 @@ numpy==1.26.2
 mediapipe==0.10.20
 ultralytics==8.0.196
 python-dotenv==1.0.1
+fastapi==0.104.1
+uvicorn==0.24.0
