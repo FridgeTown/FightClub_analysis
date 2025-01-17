@@ -10,16 +10,14 @@ import signal
 import json
 import redis
 
-redis_client = redis.Redis(
-    host="127.0.0.1",  # Redis 서버 IP
-    port=6379,        # Redis 포트
-    db=0,             # 기본 DB
-)
-
-# .env 파일 로드
 load_dotenv()
 
-# Set the following environment variables with your own values
+redis_client = redis.Redis(
+    host=os.getenv("REDIS_HOST", "127.0.0.1"),
+    port=int(os.getenv("REDIS_PORT", 6379)),
+    db=int(os.getenv("REDIS_DB", 0)),
+)
+
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
@@ -28,16 +26,13 @@ os.environ["LIVEKIT_URL"] = LIVEKIT_URL
 os.environ["LIVEKIT_API_KEY"] = LIVEKIT_API_KEY
 os.environ["LIVEKIT_API_SECRET"] = LIVEKIT_API_SECRET
 
-# ROOM_NAME = "0"  # 참여하려는 방 이름
-PARTICIPANT_IDENTITY = "participant_F4xG2aH9"
-PARTICIPANT_NAME = "name_Y8zQ1pX3"
+PARTICIPANT_IDENTITY = os.getenv("PARTICIPANT_IDENTITY", "default_identity")
+PARTICIPANT_NAME = os.getenv("PARTICIPANT_NAME", "default_name")
 
 FRAME_INTERVAL = 0.05
 
-# detector = PunchDetector()
 shutdown_event = asyncio.Event()
 rooms = dict()
-
 
 async def frame_processor(detector, room_name):
     try:
@@ -57,10 +52,10 @@ async def frame_processor(detector, room_name):
 
                 # NumPy로 밝기와 대비 조정
                 frame = frame * 1.2 + 10
-                frame = np.clip(frame, 0, 255).astype(np.uint8)  # 값 범위 제한 및 uint8로 변환
+                frame = np.clip(frame, 0, 255).astype(np.uint8) 
 
                 # OpenCV로 블러 적용
-                frame = cv2.blur(frame, (3, 3))  # 작은 커널 사용
+                frame = cv2.blur(frame, (3, 3)) 
 
 
                 result = await detector.process_frame_async(frame)
@@ -70,12 +65,6 @@ async def frame_processor(detector, room_name):
                 if not detector.result_queue.empty():
                     result = await detector.result_queue.get()
                     redis_client.set(room_name, json.dumps(detector.players))
-                # if result and 'visualization' in result:
-                #     vis_frame = result['visualization']
-                #     cv2.imshow("Visualization", vis_frame)
-                #     if cv2.waitKey(1) & 0xFF == ord("q"):
-                #         return
-
             except Exception as e:
                 print(f"프레임 처리 오류: {e}")
     except asyncio.CancelledError:
@@ -116,7 +105,6 @@ async def main(rtc_room: rtc.Room, room_name) -> None:
         publication: rtc.RemoteTrackPublication,
         participant: rtc.RemoteParticipant,
     ):
-        # logging.info("track subscribed: %s", participant.name)
         if track.kind == rtc.TrackKind.KIND_VIDEO:
             _video_stream = rtc.VideoStream(track)
             asyncio.ensure_future(process_video_frames(_video_stream, rooms[room_name]))
@@ -151,7 +139,6 @@ async def connect_and_process_room(room_name):
     rtc_room = rtc.Room()
     await main(rtc_room, room_name)
 
-
 async def poll_rooms():
     lkapi = api.LiveKitAPI()
     while not shutdown_event.is_set():
@@ -167,19 +154,16 @@ async def poll_rooms():
         except Exception as e:
             print(f"Error while polling rooms: {e}")
 
-        await asyncio.sleep(3)  # 1초 대기
-
+        await asyncio.sleep(3)
 
 def shutdown_handler():
     redis_client.flushdb()
     shutdown_event.set()
 
-
-
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, lambda s, f: shutdown_handler())
     signal.signal(signal.SIGTERM, lambda s, f: shutdown_handler())
-    # WebRTC 관련 작업 실행
+    redis_client.flushdb()
     try:
         asyncio.run(poll_rooms())
     except Exception as e:
