@@ -1,5 +1,15 @@
 # FightClub Analysis
-## Install
+## About
+FightClub 실시간 WebRTC 스트리밍 동작 분석 애플리케이션입니다.
+
+
+![](https://img.shields.io/badge/-MediaPipe-0097A7.svg?&style=flat&logo=MediaPipe&logoColor=white)
+![](https://img.shields.io/badge/-YOLOv8-4334eb.svg?&style=flat&logoColor=white)
+![](https://img.shields.io/badge/-OpenCV-5C3EE8.svg?&style=flat&logo=OpenCV&logoColor=white)
+![](https://img.shields.io/badge/-FastAPI-009688.svg?&style=flat&logo=FastAPI&logoColor=white)
+![](https://img.shields.io/badge/-Redis-FF4438.svg?&style=flat&logo=Redis&logoColor=white)
+
+## Getting Started
 ### Set virtual environment
 ```
 $ python -m venv .venv
