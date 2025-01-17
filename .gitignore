@@ -5,3 +5,4 @@ basic_room.log
 liblivekit_ffi.so
 LICENSE.md
 livekit_ffi.h
+# /__pycache__
