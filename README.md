@@ -11,8 +11,8 @@ $ pip install --upgrade pip
 $ pip install -r requirements.txt
 ```
 ### Clone and Change setting livekit setup
-Need to be cloned directly and installed after changing the settings. version conflict issue with Mediapipe. 
-```
+Need to be cloned directly and installed after changing the settings. version conflict issue with livekit and Mediapipe. 
+```bash
 $ git clone https://github.com/livekit/python-sdks.git
 ```
 - change setting in `/python-sdks/livekit-api/setup.py`
@@ -59,14 +59,14 @@ install_requires=["protobuf>=5.26.1" ...],
 install_requires=["protobuf>=4.25.3,<5" ...],
 ```
 ### Install livekit packages
-```
-// after clone and change setting, install packages
+```bash
+## after clone and change setting, install packages
 $ cd python-sdks/livekit-api
 $ pip install .
 $ cd ../livekit-rtc
 $ pip install .
 ```
-- After installation and running, probably you will see an `OSError` message.
+- You'll probably see the message 'OSError' when you run it.
 ```
 Traceback (most recent call last):
 ...
@@ -74,16 +74,20 @@ OSError: dlopen
 ...
 /.venv/lib/python3.12/site-packages/livekit/rtc/resources/liblivekit_ffi.dylib' (no such file)
 ```
-- Then, You will need to download the appropriate [liblivekit_ffi.dylib](https://github.com/livekit/rust-sdks/releases) asset for your OS environment and move it to the appropriate location.
+- Then, You will need to download the appropriate [liblivekit_ffi.dylib](https://github.com/livekit/rust-sdks/releases) asset for your OS environment move it to
   - /.venv/lib/python3.12/site-packages/livekit/rtc/resources/
 ### Set .env file
-- create .env file like .env.secret
+- create `.env` file like `.env.secret`
 ```env
 LIVEKIT_URL=
 LIVEKIT_API_KEY=
 LIVEKIT_API_SECRET=
 ```
 ### Start
-```
+```bash
+## start Mediapipe Motion Analysis
 $ python main.py
+
+## start sse server
+$ python server.py
 ```
