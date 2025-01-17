@@ -4,7 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import json
 import redis
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 
 app = FastAPI()
 
@@ -17,39 +20,68 @@ app.add_middleware(
 )
 
 redis_client = redis.Redis(
-    host="127.0.0.1",  # Redis 서버 IP
-    port=6379,        # Redis 포트
-    db=0,             # 기본 DB
+    host=os.getenv("REDIS_HOST", "127.0.0.1"),  # 기본값: 127.0.0.1
+    port=int(os.getenv("REDIS_PORT", 6379)),   # 기본값: 6379
+    db=int(os.getenv("REDIS_DB", 0)),           # 기본 DB
 )
+
+def has_significant_change(old_data: dict, new_data: dict) -> bool:
+    """
+    old_data와 new_data에서 player1/player2의 비교
+    - player1.hits.face, player2.hits.face
+    - player1.hits.body, player2.hits.body
+    - player1.punches.hook, player2.punches.hook
+    """
+    # 중첩 딕셔너리 접근 (없으면 default 반환)
+    def get_nested(d, keys, default=None):
+        for k in keys:
+            if not isinstance(d, dict) or k not in d:
+                return default
+            d = d[k]
+        return d
+
+    fields_to_check = [
+        ["player1", "hits", "face"],
+        ["player1", "hits", "body"],
+        ["player1", "punches", "hook"],
+        ["player2", "hits", "face"],
+        ["player2", "hits", "body"],
+        ["player2", "punches", "hook"],
+    ]
+
+    for field_keys in fields_to_check:
+        old_val = get_nested(old_data, field_keys)
+        new_val = get_nested(new_data, field_keys)
+        if old_val != new_val:
+            return True
+
+    return False
 
 @app.get("/api/stream/{room_name}")
 async def stream_players(room_name: str):
-    """
-    SSE 방식으로 rooms[room_name].players 데이터를 클라이언트에 전송
-    """
     async def event_generator():
+        previous_data = {}
         while True:
-            # Redis에서 데이터 가져오기
             raw_data = redis_client.get(room_name)
             
             if raw_data:
                 try:
-                    # 바이트 데이터를 JSON 문자열로 변환
-                    data = json.loads(raw_data.decode("utf-8"))
-                    # 플레이어 데이터 가져오기
-                    yield f"data: {json.dumps(data)}\n\n"
+                    current_data = json.loads(raw_data.decode("utf-8"))
+
+                    if has_significant_change(previous_data, current_data):
+                        yield f"data: {json.dumps(current_data)}\n\n"
+                        previous_data = current_data 
+
                 except json.JSONDecodeError as e:
-                    # JSON 디코딩 오류 처리
                     yield f"data: {json.dumps({'error': 'Invalid data format in Redis'})}\n\n"
             else:
-                # 방 데이터가 없는 경우
                 yield f"data: {json.dumps({'error': 'Room not found'})}\n\n"
 
-            # 1초마다 갱신
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.4)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import uvicorn\
+    app_port = int(os.getenv("APP_PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=app_port)
